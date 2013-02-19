@@ -77,7 +77,7 @@ def white(text);    colorize(text, "\e[37m"); end
 def bold(text);     colorize(text, "\e[1m");  end
 def grey(text);     colorize(text, "\e[90m"); end
 
-
+abort("Redis .rdb file does not exist: " + REDIS_SOURCE) unless File.exists? REDIS_SOURCE
 
 FileUtils.mkdir_p BACKUP_DIR unless File.directory? BACKUP_DIR
 
