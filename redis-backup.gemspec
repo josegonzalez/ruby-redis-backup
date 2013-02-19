@@ -14,4 +14,6 @@ Gem::Specification.new do |gem|
   gem.name          = "redis-backup"
   gem.require_paths = ["lib"]
   gem.version       = RedisBackup::VERSION
+  gem.add_dependency(%q<aws-sdk>, [">= 0"])
+  gem.add_dependency(%q<redis>, [">= 0"])
 end
