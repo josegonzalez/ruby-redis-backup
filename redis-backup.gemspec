@@ -5,7 +5,7 @@ Gem::Specification.new do |gem|
   gem.authors       = ["Jose Diaz-Gonzalez"]
   gem.email         = ["email@josediazgonzalez.com"]
   gem.description   = %q{redis-backup is a simple backup script to automate the creation and storage or redis dump.rdb files.}
-  gem.summary       = %q{An easy way to automate redis backups}
+  gem.summary       = %q{a small ruby gem that allows automated redis-backups}
   gem.homepage      = "https://github.com/josegonzalez/redis-backup"
 
   gem.files         = `git ls-files`.split($\)
