@@ -13,5 +13,5 @@ Gem::Specification.new do |gem|
   gem.test_files    = gem.files.grep(%r{^(test|spec|features)/})
   gem.name          = "redis-backup"
   gem.require_paths = ["lib"]
-  gem.version       = Redis::Backup::VERSION
+  gem.version       = RedisBackup::VERSION
 end
