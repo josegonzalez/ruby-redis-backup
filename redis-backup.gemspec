@@ -16,4 +16,5 @@ Gem::Specification.new do |gem|
   gem.version       = RedisBackup::VERSION
   gem.add_dependency(%q<aws-sdk>, [">= 0"])
   gem.add_dependency(%q<redis>, [">= 0"])
+  gem.add_dependency(%q<rubyzip>, [">= 0"])
 end

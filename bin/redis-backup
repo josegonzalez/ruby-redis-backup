@@ -3,125 +3,63 @@
 
 #
 # redis-backup
-#
-# Uses environment variables for running:
-#
-# - BACKUP_DIR: Directory to write backups to
-# - REDIS_SAVE: 0 or 1. If "1", then perform, and wait for, a bgsave before copying backup
-# - REDIS_SAVE_METHOD: If calling a save, the method to call on redis for saving (save or bgsave)
-# - REDIS_HOST: Host for local redis
-# - REDIS_PORT: Port to local redis
-# - REDIS_SOURCE: Full path to redis dump.rdb file
-# - S3_SAVE: 0 or 1. If "1", then use S3 to backup the file
-# - S3_BUCKET: Name of bucket to use on S3
-# - S3_ACCESS_KEY_ID: Your access_key_id for AWS S3
-# - S3_SECRET_ACCESS_KEY: Your secret_access_key for AWS S3
-#
 
 require 'aws-sdk'
 require 'date'
 require 'fileutils'
-require 'optparse'
 require 'redis'
+require 'zip/zip'
 
-require File.expand_path('../../lib/redis-backup/version', __FILE__)
-version = RedisBackup::VERSION
+require File.expand_path('../../lib/redis-backup/options', __FILE__)
+require File.expand_path('../../lib/redis-backup/utils', __FILE__)
 
-backup_dir = "/data/backup/redis"
-redis_host = "localhost"
-redis_port = 6379
-redis_save_method = false
-redis_source = "/var/lib/redis/dump.rdb"
-s3_save = !!ENV.fetch("S3_SAVE", false)
-s3_bucket = false
-s3_access_key_id = false
-s3_secret_access_key = false
+options = RedisBackup::Options.parse(ARGV)
 
-optparse = OptionParser.new do |opts|
-  opts.version = version
-  opts.banner = "Usage: redis-backup [options]"
-  opts.on('-h', '--help', 'Usage information') do
-    puts opts
-    exit
-  end
-  opts.on('-b', '--backup-dir BACKUP_DIR', 'Directory to write backups to') { |dir| backup_dir = dir }
-  opts.on('-s', '--redis-source REDIS_SOURCE', 'Full path to redis dump.rdb file') { |source| redis_source = source }
-  opts.on('-m', '--redis-save-method REDIS_SAVE_METHOD', 'The method to call on redis for saving (save or bgsave or none)') { |method| redis_save_method = method }
-  opts.on('-H', '--redis-host REDIS_HOST', 'Host for local redis') { |host| redis_host = host }
-  opts.on('-p', '--redis-port REDIS_PORT', 'Port for local redis') { |port| redis_port = port.to_i }
-  opts.on('-B', '--s3-bucket S3_BUCKET', 'Name of bucket to use on S3') { |bucket| s3_bucket = bucket }
-  opts.on('-A', '--s3-access-key-id S3_ACCESS_KEY_ID', 'Your access_key_id for AWS S3') { |key| s3_access_key_id = key }
-  opts.on('-S', '--s3-secret-access-key S3_SECRET_ACCESS_KEY', 'Your secret_access_key for AWS S3') { |secret| s3_secret_access_key = secret }
-end
-optparse.parse!
+abort("Redis .rdb file does not exist: " + options.redis_source) unless File.exists? options.redis_source
 
-BACKUP_DIR = backup_dir
-REDIS_SAVE_METHOD = redis_save_method
-REDIS_HOST = redis_host
-REDIS_SOURCE = redis_source
-REDIS_PORT = redis_port
-S3_SAVE = !!s3_bucket && !!s3_access_key_id && !!s3_secret_access_key
-S3_BUCKET = s3_bucket
-S3_ACCESS_KEY_ID = s3_access_key_id
-S3_SECRET_ACCESS_KEY = s3_secret_access_key
+FileUtils.mkdir_p options.backup_dir unless File.directory? options.backup_dir
 
+abort("Backup directory does not exist: " + options.backup_dir) unless File.directory? options.backup_dir
+abort("Backup directory is not writable: " + options.backup_dir) unless File.writable? options.backup_dir
 
-def colorize(text, color_code); RUBY_PLATFORM =~ /win32/ ?  text : "#{color_code}#{text}\e[0m"; end
-def red(text);      colorize(text, "\e[31m"); end
-def green(text);    colorize(text, "\e[32m"); end
-def yellow(text);   colorize(text, "\e[33m"); end
-def blue(text);     colorize(text, "\e[34m"); end
-def magenta(text);  colorize(text, "\e[35m"); end
-def cyan(text);     colorize(text, "\e[36m"); end
-def white(text);    colorize(text, "\e[37m"); end
-def bold(text);     colorize(text, "\e[1m");  end
-def grey(text);     colorize(text, "\e[90m"); end
-
-abort("Redis .rdb file does not exist: " + REDIS_SOURCE) unless File.exists? REDIS_SOURCE
-
-FileUtils.mkdir_p BACKUP_DIR unless File.directory? BACKUP_DIR
-
-abort("Backup directory does not exist: " + BACKUP_DIR) unless File.directory? BACKUP_DIR
-abort("Backup directory is not writable: " + BACKUP_DIR) unless File.writable? BACKUP_DIR
-
-if S3_SAVE
-  abort("No bucket specified") unless S3_BUCKET
-  abort("No access key specified in S3_ACCESS_KEY_ID environment variable") unless S3_ACCESS_KEY_ID
-  abort("No secret access key specified in S3_SECRET_ACCESS_KEY environment variable") unless S3_SECRET_ACCESS_KEY
+if options.s3_save
+  abort("No bucket specified") unless options.s3_bucket
+  abort("No access key specified in S3_ACCESS_KEY_ID environment variable") unless options.s3_access_key_id
+  abort("No secret access key specified in S3_SECRET_ACCESS_KEY environment variable") unless options.s3_secret_access_key
   AWS.config({
-    access_key_id: S3_ACCESS_KEY_ID,
-    secret_access_key: S3_SECRET_ACCESS_KEY
+    access_key_id: options.s3_access_key_id,
+    secret_access_key: options.s3_secret_access_key
   })
   s3 = AWS::S3.new
-  bucket = s3.buckets[S3_BUCKET]
-  abort("Bucket does not exist: " + S3_BUCKET) unless bucket.exists?
+  bucket = s3.buckets[options.s3_bucket]
+  abort("Bucket does not exist: " + options.s3_bucket) unless bucket.exists?
   begin
     owner = bucket.owner
   rescue AWS::S3::Errors::AccessDenied => e
-    abort("Access to the bucket is denied: " + S3_BUCKET)
+    abort("Access to the bucket is denied: " + options.s3_bucket)
   end
 end
 
 
-puts blue(cyan('Starting save'))
+puts RedisBackup::Utils.cyan('Starting save')
 backup_start = Time.now
 
-puts "--> Saving from %s to %s" % [ REDIS_SOURCE, BACKUP_DIR ]
+puts "--> Saving from %s to %s" % [ options.redis_source, options.backup_dir ]
 
-if REDIS_SAVE_METHOD
-  puts "-->  Performing background save " + bold(cyan('↴'))
+if options.redis_save_method
+  puts "-->  Performing background save " + RedisBackup::Utils.bold(RedisBackup::Utils.cyan('↴'))
   bgsave_start = Time.now
 
-  mtime = File.mtime(REDIS_SOURCE).strftime("%Y-%m-%d-%H-%M-%S")
+  mtime = File.mtime(options.redis_source).strftime("%Y-%m-%d-%H-%M-%S")
   puts "    - Current backup.rdb mtime: " + mtime
 
-  puts "    - Sending '%s' command" % (REDIS_SAVE_METHOD)
+  puts "    - Sending '%s' command" % (options.redis_save_method)
   redis = Redis.new(
-    :host => REDIS_HOST,
-    :port => REDIS_PORT
+    :host => options.redis_host,
+    :port => options.redis_port
   )
 
-  if REDIS_SAVE_METHOD == "bgsave"
+  if options.redis_save_method == "bgsave"
     redis.bgsave
   else
     redis.save
@@ -129,36 +67,66 @@ if REDIS_SAVE_METHOD
 
   puts "    - Command sent, waiting"
 
-  while File.mtime(REDIS_SOURCE).strftime("%Y-%m-%d-%H-%M-%S") == mtime
+  while File.mtime(options.redis_source).strftime("%Y-%m-%d-%H-%M-%S") == mtime
     sleep 0.0001
   end
 
-  puts "    - Save performed successfully, took %.2f seconds" % (Time.now - backup_start)
+  puts "    - Save performed successfully, took %.2f seconds" % (Time.now - bgsave_start)
 end
 
-DATETIME = DateTime.parse(`date`).strftime("%Y-%m-%d-%H-%M-%S")
-REDIS_DEST = "%s/%s-dump.rdb" % [ BACKUP_DIR, DATETIME ]
+backup_filename = "%s-dump.rdb" % [ DateTime.parse(`date`).strftime("%Y-%m-%d-%H-%M-%S") ]
+backup_rdb_file = "%s/%s" % [ options.backup_dir, backup_filename ]
+backup_file = backup_rdb_file
 
-puts "--> Copying backup from %s to %s" % [ REDIS_SOURCE, REDIS_DEST ]
-FileUtils.cp(REDIS_SOURCE, REDIS_DEST)
+puts "--> Copying backup from %s to %s" % [ options.redis_source, backup_rdb_file ]
+copy_start = Time.now
+FileUtils.cp(options.redis_source, backup_rdb_file)
+puts "    - Copying completed, took %.2f" % (Time.now - copy_start)
+puts "    - RDB filesize is %s" % (RedisBackup::Utils.filesize(backup_rdb_file))
 
-if S3_SAVE
-  puts "--> Pushing file to S3 " + bold(cyan('↴'))
+if options.compress
+  puts "--> Performing compression " + RedisBackup::Utils.bold(RedisBackup::Utils.cyan('↴'))
+  compress_start = Time.now
+
+  puts "    - Compressing to %s.zip" % [ backup_rdb_file ]
+
+  Zip::ZipFile.open(backup_rdb_file + ".zip", Zip::ZipFile::CREATE) do |zipfile|
+    zipfile.add(backup_filename, backup_rdb_file)
+  end
+
+  if options.clean
+    puts "    - Removing temporary rdb file"
+    File.delete(backup_rdb_file)
+  end
+
+  puts "    - Compression performed successfully, took %.2f seconds" % (Time.now - compress_start)
+
+  backup_file = backup_rdb_file + ".zip"
+  puts "    - Compression filesize is %s" % (RedisBackup::Utils.filesize(backup_file))
+end
+
+if options.s3_save
+  puts "--> Pushing file to S3 " + RedisBackup::Utils.bold(RedisBackup::Utils.cyan('↴'))
   s3_start = Time.now
 
   puts "    - Connecting to S3"
   s3 = AWS::S3.new
-  bucket = s3.buckets[S3_BUCKET]
+  bucket = s3.buckets[options.s3_bucket]
 
   puts "    - Uploading the file, please wait..."
-  basename = File.basename(REDIS_DEST)
+  basename = File.basename(backup_file)
   object = bucket.objects[basename]
-  object.write(:file => REDIS_DEST)
-  request_uri = object.url_for(:read).request_uri.gsub(S3_ACCESS_KEY_ID, "YOUR_S3_ACCESS_KEY_ID")
+  object.write(:file => backup_file)
+  request_uri = object.url_for(:read).request_uri.gsub(options.s3_access_key_id, "YOUR_S3_ACCESS_KEY_ID")
+
+  if options.clean
+    puts "    - Removing temporary backup file"
+    File.delete(backup_file)
+  end
 
   puts "    - Uploaded to: " + object.public_url.request_uri
-  puts "    - Use this URL to download the file: https://s3.amazonaws.com/" + S3_BUCKET + request_uri
+  puts "    - Use this URL to download the file: https://s3.amazonaws.com/" + options.s3_bucket + request_uri
   puts "    - S3 sync performed successfully, took %.2f seconds" % (Time.now - s3_start)
 end
 
-puts '🚀   ' + green('Backup took %.2f seconds' % (Time.now - backup_start))
+puts '🚀   ' + RedisBackup::Utils.green('Backup took %.2f seconds' % (Time.now - backup_start))
