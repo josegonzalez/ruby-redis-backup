@@ -8,7 +8,11 @@ require 'aws-sdk'
 require 'date'
 require 'fileutils'
 require 'redis'
-require 'zip/zip'
+begin
+  require 'zip/zip'
+rescue LoadError
+  require 'zip'
+end
 
 require File.expand_path('../../lib/redis-backup/options', __FILE__)
 require File.expand_path('../../lib/redis-backup/utils', __FILE__)
